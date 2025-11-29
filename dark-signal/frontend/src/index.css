@@ -431,8 +431,8 @@ body {
   position: relative;
   z-index: 50;
   padding: 3rem;
-  max-width: 480px;
-  width: 90%;
+  max-width: 600px;
+  width: 100%;
   animation: menuSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -561,9 +561,15 @@ body {
   box-shadow: var(--glow-red);
 }
 
+.center1 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* --- PRIMARY BUTTON --- */
 .btn-primary {
-  width: 100%;
+  width: 80%;
   padding: 1.125rem 2rem;
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent-cyan) 100%);
   border: none;
@@ -1331,4 +1337,68 @@ body {
 
 .leaderboard-item:first-child .leaderboard-name {
   color: #fbbf24;
+}
+
+
+
+/* --- NOTIFICATION BANNER STYLES --- */
+.notification-banner {
+  position: absolute;
+  top: 2rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100px); /* Start hidden above screen */
+  z-index: 9999;
+  width: auto;
+  min-width: 300px;
+  opacity: 0;
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+}
+
+.notification-banner.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.notification-content {
+  background: rgba(20, 10, 10, 0.95);
+  border: 1px solid var(--accent-red);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+  padding: 1rem 1.5rem;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  backdrop-filter: blur(10px);
+}
+
+.notification-icon {
+  color: var(--accent-red);
+  animation: pulse-alert 1s infinite;
+}
+
+.notification-text {
+  font-family: 'Orbitron', sans-serif;
+  color: var(--accent-red);
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.notification-line {
+  position: absolute;
+  bottom: 0;
+  left: 10%;
+  right: 10%;
+  height: 2px;
+  background: var(--accent-red);
+  box-shadow: 0 0 10px var(--accent-red);
+  border-radius: 2px;
+}
+
+@keyframes pulse-alert {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.9); }
 }

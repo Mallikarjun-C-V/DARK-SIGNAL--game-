@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Volume2, VolumeX, Activity, Battery, Skull, Zap, Trophy, Target, Timer, Shield } from 'lucide-react';
+// At the top of your file
+import { Volume2, VolumeX, Activity, Battery, Skull, Zap, Trophy, Target, Timer, Shield, AlertTriangle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 // ==========================================
@@ -53,6 +54,18 @@ export default function App() {
   const sonarChargesRef = useRef(sonarCharges);
   const timeSurvivedRef = useRef(timeSurvived);
   const gameEndedRef = useRef(false);
+  const nameInputRef = useRef(null);
+
+  // Dynamic audio refs
+  const monsterHeartbeatOsc = useRef(null); // OscillatorNode
+  const monsterHeartbeatGain = useRef(null); // GainNode for base amplitude
+  const monsterHeartbeatLFO = useRef(null); // LFO oscillator to create pulsing heartbeat
+  const monsterHeartbeatLfoGain = useRef(null);
+
+  const monsterFootstepTimer = useRef(null); // interval id for footstep "thumps"
+  const monsterFootstepOsc = useRef(null); // one-shot oscillator used briefly for thump
+
+  const hopeToneNodes = useRef(null); // { osc1, osc2, lfo, lfoGain, gain }
 
   useEffect(() => { gridRef.current = grid; }, [grid]);
   useEffect(() => { playerPosRef.current = playerPos; }, [playerPos]);
@@ -65,8 +78,6 @@ export default function App() {
   // ==========================================
   // 4. BACKEND CONNECTION
   // ==========================================
-
-  // ✅ UPDATED: saveScore now accepts isWin and sends it
   const saveScore = useCallback(async (finalTime, isWin) => {
     try {
       await fetch(`${API_URL}/score`, {
@@ -76,7 +87,7 @@ export default function App() {
           player: playerName || "UNKNOWN_DROID",
           time: finalTime,
           difficulty: difficulty,
-          won: isWin   // <--- NEW field
+          won: isWin
         })
       });
       fetchLeaderboard();
@@ -84,7 +95,6 @@ export default function App() {
       console.error("FAILED TO SAVE SCORE:", error);
     }
   }, [playerName, difficulty]);
-
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -108,12 +118,64 @@ export default function App() {
       audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (audioCtx.current.state === 'suspended') {
-      audioCtx.current.resume();
+      audioCtx.current.resume().catch(() => {});
     }
   }, []);
 
+  // Utility: stop & cleanup dynamic audio
+  const stopDynamicAudio = useCallback(() => {
+    try {
+      // Heartbeat
+      if (monsterHeartbeatLFO.current) {
+        try { monsterHeartbeatLFO.current.stop(); } catch(e) {}
+        monsterHeartbeatLFO.current.disconnect();
+        monsterHeartbeatLFO.current = null;
+      }
+      if (monsterHeartbeatOsc.current) {
+        try { monsterHeartbeatOsc.current.stop(); } catch(e) {}
+        monsterHeartbeatOsc.current.disconnect();
+        monsterHeartbeatOsc.current = null;
+      }
+      if (monsterHeartbeatGain.current) {
+        monsterHeartbeatGain.current.disconnect();
+        monsterHeartbeatGain.current = null;
+      }
+      if (monsterHeartbeatLfoGain.current) {
+        monsterHeartbeatLfoGain.current.disconnect();
+        monsterHeartbeatLfoGain.current = null;
+      }
+
+      // Footstep timer & oscillator
+      if (monsterFootstepTimer.current) {
+        clearInterval(monsterFootstepTimer.current);
+        monsterFootstepTimer.current = null;
+      }
+      if (monsterFootstepOsc.current) {
+        try { monsterFootstepOsc.current.stop(); } catch(e) {}
+        monsterFootstepOsc.current.disconnect();
+        monsterFootstepOsc.current = null;
+      }
+
+      // Hope pad
+      if (hopeToneNodes.current) {
+        const { osc1, osc2, lfo } = hopeToneNodes.current;
+        try { lfo.stop(); } catch(e) {}
+        try { osc1.stop(); } catch(e) {}
+        try { osc2.stop(); } catch(e) {}
+        if (hopeToneNodes.current.gain) hopeToneNodes.current.gain.disconnect();
+        if (hopeToneNodes.current.lfoGain) hopeToneNodes.current.lfoGain.disconnect();
+        hopeToneNodes.current = null;
+      }
+    } catch (err) {
+      console.warn('Error cleaning audio nodes', err);
+    }
+  }, []);
+
+  // Play simple one-off sounds
   const playSound = useCallback((type) => {
-    if (muted || !audioCtx.current) return;
+    if (muted) return;
+    initAudio();
+    if (!audioCtx.current) return;
 
     const ctx = audioCtx.current;
     const now = ctx.currentTime;
@@ -130,20 +192,18 @@ export default function App() {
       gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
       osc.start(now);
       osc.stop(now + 0.5);
-    }
-    else if (type === 'step') {
+    } else if (type === 'step') {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(100, now);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
       osc.start(now);
-      osc.stop(now + 0.1);
-    }
-    else if (type === 'die') {
+      osc.stop(now + 0.12);
+    } else if (type === 'die') {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -155,8 +215,7 @@ export default function App() {
       gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
       osc.start(now);
       osc.stop(now + 0.5);
-    }
-    else if (type === 'win') {
+    } else if (type === 'win') {
       [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
         const osc2 = ctx.createOscillator();
         const gain2 = ctx.createGain();
@@ -164,13 +223,13 @@ export default function App() {
         osc2.connect(gain2);
         gain2.connect(ctx.destination);
         osc2.frequency.value = freq;
-        gain2.gain.setValueAtTime(0.1, now + i * 0.1);
-        gain2.gain.exponentialRampToValueAtTime(0.01, now + i * 0.1 + 0.5);
+        gain2.gain.setValueAtTime(0.09, now + i * 0.1);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + i * 0.1 + 0.5);
         osc2.start(now + i * 0.1);
         osc2.stop(now + i * 0.1 + 0.5);
       });
     }
-  }, [muted]);
+  }, [muted, initAudio]);
 
   const toggleDrone = useCallback((play) => {
     if (!audioCtx.current) return;
@@ -193,12 +252,22 @@ export default function App() {
       gain.gain.value = 0.05;
       osc.start();
       bgOscillator.current = osc;
-    }
-    else if (!play && bgOscillator.current) {
-      bgOscillator.current.stop();
+    } else if (!play && bgOscillator.current) {
+      try { bgOscillator.current.stop(); } catch (e) {}
       bgOscillator.current = null;
     }
   }, [muted]);
+
+  const [notification, setNotification] = useState('');
+  const notificationTimeoutRef = useRef(null);
+
+  const triggerNotification = (msg) => {
+    playAlertSound();
+    if (nameInputRef.current) nameInputRef.current.focus();
+    if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
+    setNotification(msg);
+    notificationTimeoutRef.current = setTimeout(() => setNotification(''), 3000);
+  };
 
   // ==========================================
   // 6. LEVEL GENERATION
@@ -236,34 +305,36 @@ export default function App() {
     setSonarCharges(INITIAL_CHARGES);
     setTimeSurvived(0);
     gameEndedRef.current = false;
-  }, []);
+
+    // cleanup any leftover dynamic audio from previous runs
+    stopDynamicAudio();
+  }, [stopDynamicAudio]);
 
   // ==========================================
   // 9. EVENT HANDLERS
   // ==========================================
-
-  // ✅ UPDATED: send false to saveScore
   const handleGameOver = useCallback(() => {
     if (gameEndedRef.current) return;
     gameEndedRef.current = true;
 
     playSound('die');
     toggleDrone(false);
-    saveScore(timeSurvivedRef.current, false);   // <-- UPDATED
+    stopDynamicAudio();
+    saveScore(timeSurvivedRef.current, false);
     setGameState('GAME_OVER');
-  }, [playSound, toggleDrone, saveScore]);
+  }, [playSound, toggleDrone, saveScore, stopDynamicAudio]);
 
-  // ✅ UPDATED: send true to saveScore
   const handleWin = useCallback(() => {
     if (gameEndedRef.current) return;
     gameEndedRef.current = true;
 
     playSound('win');
     toggleDrone(false);
+    stopDynamicAudio();
     confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
-    saveScore(timeSurvivedRef.current, true);   // <-- UPDATED
+    saveScore(timeSurvivedRef.current, true);
     setGameState('WON');
-  }, [playSound, toggleDrone, saveScore]);
+  }, [playSound, toggleDrone, saveScore, stopDynamicAudio]);
 
   const fireSonar = useCallback(() => {
     if (sonarChargesRef.current > 0) {
@@ -275,12 +346,19 @@ export default function App() {
   }, [playSound]);
 
   const startGame = useCallback(() => {
-    if (!playerName) return alert("Please enter your name!");
+    if (!playerName) {
+      triggerNotification("IDENTIFICATION REQUIRED\n    ENTER YOUR NAME");
+      return;
+    }
+
     initAudio();
+    stopDynamicAudio();
     generateLevel();
     setGameState('PLAYING');
+
+    // start ambient drone after small delay (respects muted)
     setTimeout(() => toggleDrone(true), 100);
-  }, [playerName, initAudio, generateLevel, toggleDrone]);
+  }, [playerName, initAudio, generateLevel, toggleDrone, stopDynamicAudio]);
 
   // ==========================================
   // 7. GAME LOOP & AI
@@ -354,7 +432,6 @@ export default function App() {
   // ==========================================
   useEffect(() => {
     if (gameState !== 'PLAYING') return;
-
     if (playerPos.row === monsterPos.row && playerPos.col === monsterPos.col) {
       handleGameOver();
     }
@@ -437,6 +514,31 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fireSonar, playSound, handleWin]);
 
+  // =====================
+  // ALERT SOUND (for Notification)
+  // =====================
+  const playAlertSound = useCallback(() => {
+    initAudio();
+    if (!audioCtx.current) return;
+    const ctx = audioCtx.current;
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "square";
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.setValueAtTime(330, now + 0.1);
+
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.25);
+  }, [initAudio]);
 
   // ==========================================
   // 10. VISIBILITY LOGIC
@@ -473,6 +575,215 @@ export default function App() {
   }, [grid, playerPos, monsterPos, sonarActive]);
 
   // ==========================================
+  // DYNAMIC AUDIO UPDATER
+  // ==========================================
+  const updateDynamicAudio = useCallback(() => {
+    // ensure audio context exists, but don't create audio nodes if muted
+    initAudio();
+    if (!audioCtx.current) return;
+    const ctx = audioCtx.current;
+
+    if (muted) {
+      // If muted, ensure nodes are stopped (but keep context)
+      stopDynamicAudio();
+      return;
+    }
+
+    const player = playerPosRef.current;
+    const monster = monsterPosRef.current;
+    const exit = exitPosRef.current;
+
+    const monsterDist = Math.abs(player.row - monster.row) + Math.abs(player.col - monster.col);
+    const exitDist = Math.abs(player.row - exit.row) + Math.abs(player.col - exit.col);
+
+    // ----------------------------
+    // Monster heartbeat (smooth, pulsing)
+    // ----------------------------
+    if (monsterDist <= 4) {
+      // create heartbeat nodes if not present
+      if (!monsterHeartbeatOsc.current) {
+        // base oscillator (sine)
+        const hOsc = ctx.createOscillator();
+        hOsc.type = 'sine';
+        hOsc.frequency.value = 60; // base low tone
+
+        // main gain
+        const hGain = ctx.createGain();
+        hGain.gain.value = 0.0;
+
+        // LFO to pulse the amplitude (slow sine)
+        const lfo = ctx.createOscillator();
+        lfo.type = 'sine';
+        lfo.frequency.value = 2.0; // will be adjusted by intensity
+
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.15; // how much LFO modulates amplitude
+
+        // connect: hOsc -> hGain -> destination
+        hOsc.connect(hGain);
+        hGain.connect(ctx.destination);
+
+        // LFO -> lfoGain -> hGain.gain (AudioParam)
+        lfo.connect(lfoGain);
+        lfoGain.connect(hGain.gain);
+
+        // start nodes
+        hOsc.start();
+        lfo.start();
+
+        // store refs
+        monsterHeartbeatOsc.current = hOsc;
+        monsterHeartbeatGain.current = hGain;
+        monsterHeartbeatLFO.current = lfo;
+        monsterHeartbeatLfoGain.current = lfoGain;
+      }
+
+      // intensity 0..1
+      const intensity = Math.max(0, Math.min(1, (4 - monsterDist) / 4));
+
+      // set base gain (ensures audible)
+      const targetBase = 0.12 * intensity; // base amplitude (0 - 0.12)
+      monsterHeartbeatGain.current.gain.setTargetAtTime(targetBase, ctx.currentTime, 0.08);
+
+      // speed up LFO as monster gets closer (faster heartbeat)
+      const targetLfoFreq = 1.0 + intensity * 3.0; // 1Hz -> 4Hz
+      monsterHeartbeatLFO.current.frequency.setTargetAtTime(targetLfoFreq, ctx.currentTime, 0.08);
+
+      // shift pitch slightly to create tension
+      const targetFreq = 50 + intensity * 30; // 50 -> 80 Hz
+      monsterHeartbeatOsc.current.frequency.setTargetAtTime(targetFreq, ctx.currentTime, 0.12);
+
+      // Footstep "thumps" - schedule a periodic thump when close enough
+      if (!monsterFootstepTimer.current && monsterDist <= 3) {
+        // interval depends on intensity (closer = faster)
+        const beatIntervalMs = Math.max(180, 700 - intensity * 500); // 700ms -> ~200ms
+        monsterFootstepTimer.current = setInterval(() => {
+          if (muted || !audioCtx.current) return;
+
+          // create a short thump (low detuned sine with quick envelope)
+          const now = audioCtx.current.currentTime;
+          const thumpOsc = audioCtx.current.createOscillator();
+          const thumpGain = audioCtx.current.createGain();
+
+          thumpOsc.type = 'sine';
+          thumpOsc.frequency.setValueAtTime(40 + Math.random() * 20, now); // deep thump
+
+          thumpOsc.connect(thumpGain);
+          thumpGain.connect(audioCtx.current.destination);
+
+          // envelope
+          thumpGain.gain.setValueAtTime(0.6 * intensity, now);
+          thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+          thumpOsc.start(now);
+          thumpOsc.stop(now + 0.2);
+        }, beatIntervalMs);
+      }
+
+    } else {
+      // fade out heartbeat and stop footstep timer
+      if (monsterHeartbeatGain.current) {
+        monsterHeartbeatGain.current.gain.setTargetAtTime(0, ctx.currentTime, 0.3);
+      }
+      if (monsterHeartbeatLFO.current) {
+        monsterHeartbeatLFO.current.frequency.setTargetAtTime(1.0, ctx.currentTime, 0.3);
+      }
+      if (monsterFootstepTimer.current) {
+        clearInterval(monsterFootstepTimer.current);
+        monsterFootstepTimer.current = null;
+      }
+    }
+
+    // ----------------------------
+    // Hope pad for exit approach (warm layered sine pad)
+    // ----------------------------
+    if (exitDist <= 3) {
+      const hopeIntensity = Math.max(0, Math.min(1, (3 - exitDist) / 3));
+
+      if (!hopeToneNodes.current) {
+        // nodes: osc1, osc2, lfo (slow vibrato), lfoGain, gain
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const lfo = ctx.createOscillator();
+        const lfoGain = ctx.createGain();
+        const gainNode = ctx.createGain();
+
+        // soft pad: two sine waves a fifth apart
+        osc1.type = 'sine';
+        osc2.type = 'sine';
+        osc1.frequency.value = 330; // E4-ish
+        osc2.frequency.value = 495; // B4-ish (fifth)
+
+        // gentle vibrato LFO connected to frequencies
+        lfo.type = 'sine';
+        lfo.frequency.value = 2.0; // 2Hz vibrato
+        lfoGain.gain.value = 3.0; // +/- 3 Hz
+
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc1.frequency);
+        lfoGain.connect(osc2.frequency);
+
+        // connect pad
+        osc1.connect(gainNode);
+        osc2.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        // set initial quiet
+        gainNode.gain.value = 0;
+
+        // start
+        osc1.start();
+        osc2.start();
+        lfo.start();
+
+        hopeToneNodes.current = { osc1, osc2, lfo, lfoGain, gain: gainNode };
+      }
+
+      // set gentle gain and slight frequency rise as we approach
+      hopeToneNodes.current.gain.gain.setTargetAtTime(0.28 * hopeIntensity, ctx.currentTime, 0.25);
+
+      // raise the base slightly for a hopeful "lift"
+      hopeToneNodes.current.osc1.frequency.setTargetAtTime(330 + hopeIntensity * 18, ctx.currentTime, 0.3);
+      hopeToneNodes.current.osc2.frequency.setTargetAtTime(495 + hopeIntensity * 28, ctx.currentTime, 0.3);
+
+      // also slightly increase LFO speed for shimmer
+      hopeToneNodes.current.lfo.frequency.setTargetAtTime(1.5 + hopeIntensity * 1.5, ctx.currentTime, 0.3);
+
+    } else {
+      if (hopeToneNodes.current && hopeToneNodes.current.gain) {
+        hopeToneNodes.current.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.4);
+      }
+    }
+
+  }, [initAudio, muted, stopDynamicAudio]);
+
+  useEffect(() => {
+    if (gameState !== 'PLAYING') return;
+
+    const audioInterval = setInterval(() => {
+      updateDynamicAudio();
+    }, 180); // run ~5-6 times per second for smoothness
+
+    return () => {
+      clearInterval(audioInterval);
+    };
+  }, [gameState, updateDynamicAudio]);
+
+  // cleanup all audio on unmount
+  useEffect(() => {
+    return () => {
+      stopDynamicAudio();
+      try {
+        if (bgOscillator.current) { bgOscillator.current.stop(); bgOscillator.current = null; }
+      } catch (e) {}
+      if (audioCtx.current) {
+        try { audioCtx.current.close(); } catch (e) {}
+        audioCtx.current = null;
+      }
+    };
+  }, [stopDynamicAudio]);
+
+  // ==========================================
   // 11. RENDER
   // ==========================================
   return (
@@ -487,6 +798,24 @@ export default function App() {
       {/* Scanlines Effect */}
       <div className="scanlines" />
 
+      {/* === NEW NOTIFICATION BANNER === */}
+      <div className={`notification-banner ${notification ? 'visible' : ''}`}>
+        <div className="notification-content">
+          <AlertTriangle size={20} className="notification-icon" />
+          <span
+            className="notification-text"
+            style={{ whiteSpace: "pre-wrap" }}
+            dangerouslySetInnerHTML={{
+              __html: notification
+                .replace(/\n/g, "<br/>")
+                .replace(/ {2}/g, "&nbsp;&nbsp;")
+            }}
+          ></span>
+
+        </div>
+        <div className="notification-line"></div>
+      </div>
+
       {/* ========== START MENU ========== */}
       {gameState === 'START' && (
         <div className="start-menu glass-card">
@@ -497,12 +826,14 @@ export default function App() {
           <div className="input-group">
             <label className="input-label">Callsign</label>
             <input
+              ref={nameInputRef}
               type="text"
               placeholder="Enter your name"
               value={playerName}
               className="input-field"
               onChange={e => setPlayerName(e.target.value)}
             />
+
           </div>
 
           {/* Difficulty Selection */}
@@ -522,9 +853,11 @@ export default function App() {
           </div>
 
           {/* Start Button */}
-          <button onClick={startGame} className="btn-primary">
-            Begin Mission
-          </button>
+          <div className="center1">
+            <button onClick={startGame} className="btn-primary">
+              Begin Mission
+            </button>
+          </div>
 
           {/* Controls */}
           <div className="controls-help">
@@ -621,8 +954,8 @@ export default function App() {
                 <div
                   key={i}
                   className={`sonar-charge ${i < sonarCharges ? 'active' :
-                      i === sonarCharges ? 'charging' : ''
-                    }`}
+                    i === sonarCharges ? 'charging' : ''
+                  }`}
                 />
               ))}
             </div>
@@ -720,9 +1053,7 @@ export default function App() {
             </div>
           </div>
 
-          
-
-                    {/* Leaderboard - Fastest Winners */}
+          {/* Leaderboard - Fastest Winners */}
           {leaderboard.length > 0 && (
             <div className="leaderboard1">
               <h3 className="leaderboard-title">
@@ -751,7 +1082,10 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setGameState('START')}
+            onClick={() => {
+              stopDynamicAudio();
+              setGameState('START');
+            }}
             className="btn-restart"
           >
             Play Again
@@ -761,7 +1095,19 @@ export default function App() {
 
       {/* ========== MUTE BUTTON ========== */}
       <button
-        onClick={() => setMuted(!muted)}
+        onClick={() => {
+          setMuted(m => {
+            const next = !m;
+            if (next) {
+              // mute: stop dynamic audio so we don't leak nodes
+              stopDynamicAudio();
+            } else {
+              // unmute: init audio immediately
+              initAudio();
+            }
+            return next;
+          });
+        }}
         className="mute-btn"
       >
         {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
